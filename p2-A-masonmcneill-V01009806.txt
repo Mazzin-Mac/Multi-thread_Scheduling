@@ -1,0 +1,96 @@
+Design document answer following questions:
+
+1) How many threads are you going to use?
+	Specify the work each thread is intended to perform.
+
+-> One main thread: parse input file, create threads, start timer.
+	thread is idle during simulation, it just performs setup/cleanup.
+
+-> One controller thread: Global scheduler, it will decide which train will
+	enter the main track and signals it to enter. It will wait for the
+	train to cross before allowing the next one.
+
+-> n train threads: One thread per train, each simulates a single train.
+	It will load (sleep during load), add to station queue, cross (sleep),
+	and then finish and signal controller that it is done.
+	Then terminate.
+
+-> Therefore a total of (2+n) threads. 
+
+
+2) Do the threads work independently? Or, is there a "controller" thread?
+	
+->	1 controller thread to manage the main track sending and waiting.
+	Train threads will do their own work (loading, queueing, waiting)
+	But the controller thread will decide when they cross. It will
+	maintain the priority rules and signals exactly one train at a time.
+
+
+3) How many mutexes are you going to use?
+	Specify the operation that each mutex will guard.
+
+->	4 Station mutex - mutex will protect station queues
+		There will be four queues for each type of priority
+		i.e high & low, east & west.
+		Therefore, each queue must get its own mutex.
+
+	1 Main track mutex - protects access to the main track state.
+		Used to indicate to the controller when it can or cannot 
+		send a train.	
+
+
+4) Will the main thread be idle? if not, what will it be doing?
+	
+	The main thread will be idle. It will perform setup and cleanup.
+	While the train simulation is running it will be standing by idle.
+
+
+5) How are you going to represent stations (loaded trains ready to depart)?
+	What type of data structure will you use?
+
+	Stations will be a queue of Train structs.
+	The train structs will store id, priority, direction, 
+		load/cross time.
+	
+
+6) How are you going to ensure that data structures in your program
+	will not be modified concurrently?
+
+	The station mutexs protecting each queue will ensure that the data
+	will not be modified concurrently. The train structs stored inside,
+	will never be modified so they do not need a mutex.
+
+
+7) How many convars are you going ot use? For each convar:
+	~ Describe the condition it will represent.
+	~ Which mutex is associated with the convar? why?
+	~ What operation should be performed one pthread_cond_wait() has be unblocked
+		and re-acquired the mutex?
+
+	4 convars for each queue: condition to indicate if a queue is empty
+	or if there is 1 or more trains in the queue and available.
+	This will be associated with the corresponding queue mutex.
+	This is because the mutex will ensure that the queue is added
+	and dequeued safely, while the convar will signal the controller
+	thread that a train is available from this particular queue.
+	It must check if the queue is empty, if so it must set to non-ready
+	empty queue state so that the controller cant pull from it.
+
+	1 convar for main track: It will indicate if the main track
+	is available to send a track (empty) or if a train is on it.
+	This will be associated wiht the main track mutex. The mutex
+	protects access to the track state (empty or busy) and the convar
+	signals that the track is empty and ready for the next train. 
+	It must check if track is in use, then choose next train or wait if no trains are left.
+
+
+8) Briefly sketch the overall algorithm you will use. Use sentences.
+
+	Main thread:
+	parse input, create mutex and convars, create controller thread,
+	create n train threads, join dispatcher thread.
+
+
+	Train thread:
+	sleep(load_time), get station mutex, push onto queue, 
+	wake dispatcher with convar, wait un
