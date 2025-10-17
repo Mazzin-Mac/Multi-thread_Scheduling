@@ -11,7 +11,7 @@ Design document answer following questions:
 	train to cross before allowing the next one.
 
 -> n train threads: One thread per train, each simulates a single train.
-	It will load (sleep during load), add to station queue, cross (sleep),
+	It will load, add to station queue, cross,
 	and then finish and signal controller that it is done.
 	Then terminate.
 
@@ -22,8 +22,8 @@ Design document answer following questions:
 	
 ->	1 controller thread to manage the main track sending and waiting.
 	Train threads will do their own work (loading, queueing, waiting)
-	But the controller thread will decide when they cross. It will
-	maintain the priority rules and signals exactly one train at a time.
+	But the controller thread will decide who and when they cross. It will
+	maintain the priority rules and signal exactly one train at a time.
 
 
 3) How many mutexes are you going to use?
@@ -33,6 +33,7 @@ Design document answer following questions:
 
 ->	1 start mutex - It will to coordinate when all threads should begin.
 		The train threads will wait for it to begin loading.
+		It will be used by controller to indicate when sim is finished.
 
 	4 Station mutex - mutex will protect station queues
 		There will be four queues for each type of priority
@@ -41,16 +42,15 @@ Design document answer following questions:
 		It will be used by train threads to add themselves to queue
 		It will be used by controller to check and remove from queue.
 
-
 	1 Main track mutex - protects access to the main track state.
 		Used to indicate to the controller when it can or cannot 
 		send a train.	
-		Used by controller to check if track is free.
+		Used by controller to check if track is free before sending a train.
 		Used by train thread when signaling it is done crossing.
 
 	1 Train cross id mutex - protects the variable that records
 		train id for which train will cross next.
-		Used by controller to set the variable,
+		Used by controller to select a train,
 		Used by train threads to check if they are picked to
 		cross next.
 
@@ -59,7 +59,7 @@ Design document answer following questions:
 	
 	The main thread will be idle. It will perform setup and cleanup.
 	While the train simulation is running it will be standing by idle.
-
+	Once signalled of simulation complete it will cleanup & terminate.
 
 5) How are you going to represent stations (loaded trains ready to depart)?
 	What type of data structure will you use?
@@ -78,20 +78,23 @@ Design document answer following questions:
 
 	Main track state is protected by a mutex.
 
+	Start state is secured with a mutex.
+
+	train id selected variable will be secured with a mutex.
+
 
 7) How many convars are you going ot use? For each convar:
 	~ Describe the condition it will represent.
 	~ Which mutex is associated with the convar? why?
-	~ What operation should be performed one pthread_cond_wait() has be unblocked
+	~ What operation should be performed once pthread_cond_wait() has be unblocked
 		and re-acquired the mutex?
 
 	Total convars: 6	
 
 	Start convar: 
-		- All train threads but wait until signalled that setup
-		is completed, and timer has started.
+		- Will represent simulation status. Started or Stopped.
 		- Associated with start mutex, it protects the start flag
-		that indicates when simulation has begun.
+		that indicates when simulation has begun or finished.
 		- After pthread_cond_wait() unblocks and reacquired start
 		mutex, checks that flag is set, unlocks mutex and begins loading phase.
 
@@ -114,7 +117,7 @@ Design document answer following questions:
 
 	train to cross convar:
 		- Represents if this train is allowed to run
-		- Associated with the train to cross id mutex
+		- Associated with the train to cross id mutex to ensure it is not being modified while a train is checking.
 		- Recheck the train id condition, once safe to proceed unlock mutex,
 		 and begin crossing.
 
@@ -131,13 +134,14 @@ Design document answer following questions:
 	Wait for start signal from main thread to begin loading.
 	Lock queue mutex, add train to queue, then unlock mutex.
 	signal controller that queue has a ready train.
-	wait until controller signals to cross.
-	after crossing, signla contorller that crossing is complete, exit.
+	wait until controller signals train id to cross.
+	after crossing, signal controller that crossing is complete, exit.
 
 
 	Controller thread:
 	Wait on queue ready convars until atleast one train is ready.
 	Lock queue mutex and select next train ot cross.
-	Signal trains with track busy convar to tell trains it is free.
+	mark track busy
+	Signal trains with track id convar to tell train to cross.
 	waits until train finsihed crossing and marks track free.
 	repeat until all trains are done. 
