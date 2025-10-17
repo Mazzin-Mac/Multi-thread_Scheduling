@@ -29,14 +29,30 @@ Design document answer following questions:
 3) How many mutexes are you going to use?
 	Specify the operation that each mutex will guard.
 
-->	4 Station mutex - mutex will protect station queues
+	Number of mutexs: 7
+
+->	1 start mutex - It will to coordinate when all threads should begin.
+		The train threads will wait for it to begin loading.
+
+	4 Station mutex - mutex will protect station queues
 		There will be four queues for each type of priority
 		i.e high & low, east & west.
 		Therefore, each queue must get its own mutex.
+		It will be used by train threads to add themselves to queue
+		It will be used by controller to check and remove from queue.
+
 
 	1 Main track mutex - protects access to the main track state.
 		Used to indicate to the controller when it can or cannot 
 		send a train.	
+		Used by controller to check if track is free.
+		Used by train thread when signaling it is done crossing.
+
+	1 Train cross id mutex - protects the variable that records
+		train id for which train will cross next.
+		Used by controller to set the variable,
+		Used by train threads to check if they are picked to
+		cross next.
 
 
 4) Will the main thread be idle? if not, what will it be doing?
@@ -60,6 +76,8 @@ Design document answer following questions:
 	will not be modified concurrently. The train structs stored inside,
 	will never be modified so they do not need a mutex.
 
+	Main track state is protected by a mutex.
+
 
 7) How many convars are you going ot use? For each convar:
 	~ Describe the condition it will represent.
@@ -67,51 +85,59 @@ Design document answer following questions:
 	~ What operation should be performed one pthread_cond_wait() has be unblocked
 		and re-acquired the mutex?
 
-	4 convars for each queue: 
-	Each station will have a convar that signals a train is now waiting
-	in the queue.
+	Total convars: 6	
 
-	The controller waits until any queue has a train ready.
-	When a train thread finishes loading, it locks its station mutex,
-	pushes itself onto the queue, and then calls pthread_cond_signal()
-	on that queues convar to notify the controller.
-	Each station convar is paried with that stations mutex because
-	they are both related ot that stations queue.
+	Start convar: 
+		- All train threads but wait until signalled that setup
+		is completed, and timer has started.
+		- Associated with start mutex, it protects the start flag
+		that indicates when simulation has begun.
+		- After pthread_cond_wait() unblocks and reacquired start
+		mutex, checks that flag is set, unlocks mutex and begins loading phase.
 
-	After pthread_cond_wait(): the controlller should check the queue,
-	if not empty, select next train and signal it to cross the track.	
+	queue ready convars (4 of them):
+		- Represents when at least one train is finished loading and 
+		is waiting in station queue.
+		- Associated with station mutex, protects access to queue
+		so only one thread can modify or look at the queue at a time.
+		- checks queue to confirm not empty, removes next train,
+		and unlcoks the mutex before signaling train to cross.
 
+	track busy convar: 
+		- Represents if the main track is free or not. i.e.
+		train has finsihed crossing and signaled completion.
+		- Associated with track mutex, protects track in use
+		variable to ensure only one train is on the track at 
+		a time.
+		- checks track is marked free, updates state to occupied for next
+		train, then unlocks before signaling that train to cross. 
 
-	1 convar for main track:
-	The main track will have a convar that signals the main track
-	is now free for the next train.
-
-	After the controller lets a train onto the track, it must wait
-	for the train to cross. The train thread signals the controller
-	once it is done crossing.
-
-	It will be paried with the mai ntrack mutex since that mutex protects
-	the tracks state.
-
-	After pthread_cond_wait() the controller should lock the track mutex,
-	check if the track is free, then choose and signal next train to cross.
+	train to cross convar:
+		- Represents if this train is allowed to run
+		- Associated with the train to cross id mutex
+		- Recheck the train id condition, once safe to proceed unlock mutex,
+		 and begin crossing.
 
 
 8) Briefly sketch the overall algorithm you will use. Use sentences.
 
 	Main thread:
-	parse input, create mutex and convars, create controller thread,
-	create n train threads, join dispatcher thread.
-
+	Parse input file and create all mutexs, convars, and queues.
+	Create controller and train threads
+	Once all threads ready, singla start condition.
+	wait for threads to complete then terminate.
 
 	Train thread:
-	sleep(load_time), locks station queue mutex, push onto queue, 
-	wake dispatcher with convar using pthred_cond_signal(),
-	wait for signal to cross, sleep(cross-time), signal controller
-	that the track is now free.
+	Wait for start signal from main thread to begin loading.
+	Lock queue mutex, add train to queue, then unlock mutex.
+	signal controller that queue has a ready train.
+	wait until controller signals to cross.
+	after crossing, signla contorller that crossing is complete, exit.
+
 
 	Controller thread:
-	Wait until any queue has a train read using pthread_cond_wait(),
-	select next train to cross (following rules), signal train to cross,
-	wait for train thread to signal that is is done crossing, repeat 
-	until no trains left.
+	Wait on queue ready convars until atleast one train is ready.
+	Lock queue mutex and select next train ot cross.
+	Signal trains with track busy convar to tell trains it is free.
+	waits until train finsihed crossing and marks track free.
+	repeat until all trains are done. 
